@@ -12,7 +12,36 @@ function upperFirst(str: string): string {
     return str.slice(0, 1).toUpperCase() + str.slice(1);
 }
 
+/**
+ * A map of terms which should have their cased versions treated specially.
+ */
+const capitalizations = [
+    { needle: /Id/g, replace: "ID" },
+    { needle: /Oauth/g, replace: "OAuth" },
+];
+
+/**
+ * Fixes capitalizations
+ */
+function fixCaps(str: string): string {
+    capitalizations.forEach(cap => {
+        str = str.replace(cap.needle, cap.replace);
+    });
+
+    return str;
+}
+
 export class GoTarget implements Target {
+
+    constructor() {
+        this.models = {};
+    }
+
+    /**
+     * Models is a map of RAML data types to top-level struct types.
+     */
+    private models : { [name: string]: string };
+
     check(): Promise<void> {
         return Promise.resolve();
     }
@@ -21,7 +50,7 @@ export class GoTarget implements Target {
      * Returns a gofmt process that writes to a
      * file in the target output directory.
      */
-    _startStream(output: string, file: string, cmd: string="gofmt"): child.ChildProcess {
+    private startStream(output: string, file: string, cmd: string="gofmt"): child.ChildProcess {
         const fmt = child.spawn(cmd);
         fmt.stderr.pipe(process.stderr);
         fmt.stdout.pipe(fs.createWriteStream(path.join(output, file)));
@@ -31,31 +60,35 @@ export class GoTarget implements Target {
     }
 
     /**
+     * Returns the Go type for a RAML type string.
+     */
+    private translateTypeString(str: string): string {
+        if (str.endsWith("[]")) {
+            return `[]${this.translateTypeString(str.slice(0, -2))}`;
+        }
+
+        if (str.indexOf("|") !== -1) {
+            return `interface{}`;
+        }
+
+        switch (str) {
+        case "string":              return "string";
+        case "integer":
+        case "number":              return "int";
+        case "uint":                return "uint";
+        case "boolean":             return "bool";
+        case "object":              return "map[string]interface{}";
+        case "IsoDate":             return "time.Time";
+        case "UnixTimestampMillis": return "time.Time";
+        }
+
+        return str;
+    }
+
+    /**
      * Returns the Go type for a RAML type declaration.
      */
-    _translateType(type: api10.TypeDeclaration): string {
-        const getInnerStr = (str: string): string => {
-            if (str.endsWith("[]")) {
-                return `[]${getInnerStr(str.slice(0, -2))}`;
-            }
-
-            if (str.indexOf("|") !== -1) {
-                return `interface{}`;
-            }
-
-            switch (str) {
-            case "string":              return "string";
-            case "number":              return "int";
-            case "uint":                return "uint";
-            case "boolean":             return "bool";
-            case "object":              return "map[string]interface{}";
-            case "IsoDate":             return "time.Time";
-            case "UnixTimestampMillis": return "time.Time";
-            }
-
-            return str;
-        };
-
+    private translateType(type: api10.TypeDeclaration): string {
         let out = "";
         if (!type.required()) {
             out += "*";
@@ -67,15 +100,15 @@ export class GoTarget implements Target {
             primary = (<api10.ArrayTypeDeclaration>type).items().type()[0];
         }
 
-        out += getInnerStr(primary);
+        out += this.translateTypeString(primary);
 
-        return out;
+        return fixCaps(out);
     }
 
     /**
      * Returns the internal, Go name for a JavaScript property.
      */
-    _translatePropName(name: string, isExported: boolean=true): string {
+    private translatePropName(name: string, isExported: boolean=true): string {
         name = name.split(/[^a-z0-9]+/ig)
             .map((str, i) => (i > 0 || isExported) ? upperFirst(str) : str)
             .join('');
@@ -84,14 +117,63 @@ export class GoTarget implements Target {
             name = "kind";
         }
 
-        return name;
+        return fixCaps(name);
     }
 
     /**
      * Creates a models.go file containing objects from the API.
      */
-    _createModels(api: api10.Api, output: string): child.ChildProcess {
-        const stream = this._startStream(output, "models.go");
+    private createModels(api: api10.Api, output: string): child.ChildProcess {
+        const stream = this.startStream(output, "models.go");
+
+        api.types().forEach(type => {
+            if (!("properties" in type)) {
+                return;
+            }
+
+            this.generateStruct(stream, api, type.name(), <api10.ObjectTypeDeclaration>type);
+            this.models[type.name()] = type.name();
+        });
+
+        return stream;
+    }
+
+    private inferMethodName(resource: api10.Resource, method: api10.Method): string {
+        if (method.displayName() !== null) {
+            return method.displayName();
+        }
+
+        let parts = resource.absoluteUri()
+            .split("/")
+            .filter(seg => !(/^\{.+\}$/).test(seg))
+            .map(part => upperFirst(part))
+            .slice(5)
+            .join("")
+            .replace(/[^a-z0-9]/ig, "")
+
+        parts = fixCaps(parts);
+
+        switch (method.method()) {
+        case "get":    return `Get${parts}`;
+        case "post":   return `Create${parts}`;
+        case "put":
+        case "patch":  return `Update${parts}`;
+        case "delete": return `Delete${parts}`;
+        }
+
+        return "UNKNOWN";
+    }
+
+    /**
+     * Writes a struct containing the specified list of types to standard
+     * output.
+     */
+    private generateStruct(stream: child.ChildProcess, api: api10.Api,
+        name: string, type: api10.ObjectTypeDeclaration) {
+
+        if (this.models.hasOwnProperty(name)) {
+            return;
+        }
 
         /**
          * Returns an object containing a map of property names to their
@@ -105,9 +187,9 @@ export class GoTarget implements Target {
             const objType = <api10.ObjectTypeDeclaration>type;
             const declaration : { [prop:string]: string } = {};
             objType.properties().forEach(prop => {
-                const name = this._translatePropName(prop.name());
+                const name = this.translatePropName(prop.name());
                 const annotation = "`json:\"" + prop.name() + "\"`";
-                declaration[name] = `${this._translateType(prop)} ${annotation}`;
+                declaration[name] = `${this.translateType(prop)} ${annotation}`;
             });
 
             objType.type().forEach(subtype => {
@@ -120,44 +202,159 @@ export class GoTarget implements Target {
             });
 
             return declaration;
-        }
+        };
 
-        api.types().forEach(type => {
-            if (!("properties" in type)) {
-                return;
-            }
-
-            stream.stdin.write(`type ${type.name()} struct {`);
-            const props = generateTypesFor(type);
-            Object.keys(props).forEach(prop => {
-                stream.stdin.write(`${prop} ${props[prop]}\n`)
-            });
-            stream.stdin.write("}\n\n");
+        stream.stdin.write(`type ${name} struct {`);
+        const props = generateTypesFor(type);
+        Object.keys(props).forEach(prop => {
+            stream.stdin.write(`${prop} ${props[prop]}\n`)
         });
-
-        return stream;
+        stream.stdin.write("}\n\n");
     }
 
-    _createEndpoints(api: api10.Api, output: string): child.ChildProcess {
-        const stream = this._startStream(output, "endpoints.go", "cat");
-        const generateMethods = (resource: api10.Resource) => {
-            resource.methods().forEach(method => {
-                stream.stdin.write(`func ${method.displayName()}(`);
-                resource.uriParameters().forEach((param, i) => {
-                    if (i > 0) {
-                        stream.stdin.write(", ");
-                    }
-                    stream.stdin.write(this._translatePropName(param.name(), false));
-                    stream.stdin.write(' ' + this._translateType(param));
-                });
-                stream.stdin.write(") (http.Response, ");
+    private createEndpoints(api: api10.Api, output: string): child.ChildProcess {
+        const stream = this.startStream(output, "endpoints.go");
+        stream.stdin.write(`import (
+            "bytes"
+            "encoding/json"
+            "fmt"
+            "net/http"
+            "net/url"
 
-                const goodRes = method.responses().find(res => Number(res.code().value()) < 300);
-                if (goodRes && goodRes.body().length > 0) {
-                    stream.stdin.write(`${this._translateType(goodRes.body()[0])}, `);
+            "github.com/google/go-querystring"
+        )
+        `);
+
+        enum ReqStructKind {
+            Payload = 0,
+            Params
+        }
+
+        const generateReqStruct = (name: string, kind: ReqStructKind, types: Array<api10.TypeDeclaration>): string => {
+            const primary = types[0];
+            if (primary.name() && this.models.hasOwnProperty(primary.name())) {
+                return this.models[primary.name()];
+            }
+
+            stream.stdin.write(`type ${name} struct {`);
+            types.forEach(prop => {
+                stream.stdin.write(this.translatePropName(prop.name()) +
+                    " " + this.translateTypeString(prop.type()[0]) + " `" +
+                    (kind === ReqStructKind.Params ? "url" : "json") + ":\""
+                    + prop.name() + "\"`\n"
+                );
+            });
+            stream.stdin.write("}\n\n");
+
+            return name;
+        };
+
+        const generateMethods = (resource: api10.Resource) => {
+
+            let fmtParams = [`"${resource.absoluteUri().replace("{version}", "1")}"`];
+            let methodArgs = new Array<String>();
+
+            resource.absoluteUriParameters().slice(1).forEach((param, i) => {
+                let argName = this.translatePropName(param.name(), false);
+
+                fmtParams[0] = fmtParams[0].replace(`{${param.name()}}`,
+                    param.type()[0] === "number" ? "%d" : "%s");
+                fmtParams.push(argName);
+                methodArgs.push(argName + " " + this.translateType(param));
+            });
+
+            resource.methods().forEach(method => {
+                const methodName = this.inferMethodName(resource, method);
+
+                let queryParams = method.queryParameters();
+                let body = method.body();
+                method.is().forEach(trait => {
+                    queryParams = queryParams.concat(trait.trait().queryParameters());
+                    body = body.concat(trait.trait().body());
+                });
+
+                let argSuffix = "";
+                if (body.length) {
+                    argSuffix += ", payload " + generateReqStruct(
+                        `${methodName}Payload`,
+                        ReqStructKind.Payload,
+                        body
+                    );
                 }
 
-                stream.stdin.write(`error) { /* todo */ }\n`);
+                if (queryParams.length) {
+                    argSuffix += ", params " + generateReqStruct(
+                        `${methodName}Params`,
+                        ReqStructKind.Params,
+                        queryParams
+                    );
+                }
+                if (!methodArgs.length) {
+                    argSuffix = argSuffix.slice(2);
+                }
+
+
+                stream.stdin.write(`func (c *Client) ${methodName}(${methodArgs.join(", ")}${argSuffix}) (*http.Response,`);
+                const goodRes = method.responses().find(res => Number(res.code().value()) < 300);
+                let resType : string;
+                if (goodRes && goodRes.body().length > 0) {
+                    resType = this.translateType(goodRes.body()[0]);
+                    stream.stdin.write(`${resType}, `);
+                }
+                stream.stdin.write("error) {");
+
+                let request = `Method: "${method.method()}",
+                    URL: fmt.Sprintf(${fmtParams.join(", ")}) + "?" + q,
+                `;
+
+                if (body) {
+                    request += `Body: bytes.NewReader(body),
+                        ContentLength: len(body),
+                        Header: http.Header{
+                            "Content-Type": {"application/json"},
+                        },
+                    `;
+
+                    stream.stdin.write(`
+                        body, err := json.Marshal(payload)
+                        if err != nil {
+                            return err
+                        }
+                    `);
+                }
+
+                if (queryParams) {
+                    stream.stdin.write(`
+                        q, err := query.Values(params)
+                        if err != nil {
+                            return err
+                        }
+                    `);
+                } else {
+                    stream.stdin.write(`
+                        q := ""
+                    `);
+                }
+
+                stream.stdin.write(`
+                    res, err := c.do(&http.Request{${request}})
+                    if err != nil || res.StatusCode >= 300 {
+                        return res, ${resType ? "nil, " : ""}err
+                    }
+                `);
+
+                if (resType) {
+                    stream.stdin.write(`\n
+                        var typ ${resType}
+                        if err := json.NewDecoder(res.Body).Decode(&typ); err != nil {
+                            return err
+                        }
+
+                        return res, typ, nil`
+                    );
+                }
+
+                stream.stdin.write("}\n\n");
             });
 
             resource.resources().forEach(generateMethods);
@@ -170,8 +367,8 @@ export class GoTarget implements Target {
 
     generate(api: api10.Api, output: string): Promise<void> {
         const streams = [
-            this._createModels(api, output),
-            this._createEndpoints(api, output),
+            this.createModels(api, output),
+            this.createEndpoints(api, output),
         ];
 
         return new Promise<void>((resolve, reject) => {
