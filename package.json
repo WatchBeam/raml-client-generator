@@ -1,0 +1,41 @@
+{
+  "name": "raml-client-generator",
+  "version": "1.0.0",
+  "description": "API client generator for multiple languages from RAML definitions",
+  "main": "index.js",
+  "scripts": {
+    "build": "rm -rf lib && tsc -p ./",
+    "test": "standard && mocha test --recursive"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WatchBeam/raml-client-generator.git"
+  },
+  "keywords": [
+    "raml",
+    "client",
+    "api",
+    "code",
+    "generator",
+    "generation"
+  ],
+  "author": "Connor Peet <connor@peet.io>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/WatchBeam/raml-client-generator/issues"
+  },
+  "homepage": "https://github.com/WatchBeam/raml-client-generator#readme",
+  "devDependencies": {
+    "chai": "^3.5.0",
+    "mocha": "^2.5.3",
+    "sinon": "^1.17.4",
+    "standard": "^7.1.2",
+    "tslint": "^3.13.0",
+    "typescript": "^1.8.10"
+  },
+  "dependencies": {
+    "chokidar": "^1.6.0",
+    "raml-1-parser": "^0.2.26",
+    "yargs": "^4.7.1"
+  }
+}
