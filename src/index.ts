@@ -1,4 +1,5 @@
 import { Target } from "./target";
+import { Todo } from "./todo";
 import { loadApi, api10 } from "raml-1-parser";
 
 import * as path from "path";
@@ -29,10 +30,16 @@ try {
 }
 
 const target = <Target>require(`./targets/${argv.target}`).default;
+const todo = new Todo();
 
+todo.start("Installing dependencies");
 target.check()
+.then(() => todo.start("Parsing RAML"))
 .then(() => loadApi(argv._[0]))
-.then((api: any) => target.generate(api, argv.output))
+.then((api: any) => {
+    todo.finish();
+    return target.generate(api, argv.output);
+})
 .then(() => process.exit(0))
 .catch(e => {
     console.error(e.stack || e);

@@ -34,7 +34,9 @@
     "typescript": "^1.8.10"
   },
   "dependencies": {
+    "chalk": "^1.1.3",
     "chokidar": "^1.6.0",
+    "figures": "^1.7.0",
     "raml-1-parser": "^0.2.26",
     "yargs": "^4.7.1"
   }

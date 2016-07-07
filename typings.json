@@ -1,5 +1,8 @@
 {
   "globalDependencies": {
     "node": "registry:env/node#6.0.0+20160622202520"
+  },
+  "dependencies": {
+    "chalk": "registry:npm/chalk#1.0.0+20160211003958"
   }
 }
