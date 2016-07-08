@@ -3,12 +3,33 @@ import * as child from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 
+function fmtPipe(target: string, fn: (input: NodeJS.WritableStream) => void): Promise<void> {
+    const fmt = child.spawn("gofmt");
+    fmt.stderr.pipe(process.stderr);
+    fmt.stdout.pipe(fs.createWriteStream(target));
+    fn(fmt.stdin);
+
+    return new Promise<void>((resolve, reject) => {
+        fmt.once("exit", (status: number) => {
+            if (status === 0) {
+                resolve();
+            } else {
+                reject(new GofmtError(`Error formatting file, exit code ${status}`));
+            }
+        });
+
+        fmt.once("error", (err: any) => {
+            reject(err);
+        });
+    });
+}
+
 /**
  * Module is used for building a Go module in a specified target directory.
  */
 export class Module {
 
-    private files = new Array<File>();
+    private files = new Array<{ save(): Promise<void> }>();
     private identifiers : { [name: string]: any } = {};
 
     /**
@@ -18,7 +39,7 @@ export class Module {
      */
     constructor(private dir: string, private name: string=null) {
         if (name === null) {
-            this.name = dir.split(path.delimiter).pop();
+            this.name = path.basename(dir);
         }
     }
 
@@ -29,6 +50,20 @@ export class Module {
         const f = new File(path.join(this.dir, name), this);
         this.files.push(f)
         return f;
+    }
+
+    /**
+     * Queues a filed to be copied over into the target directory.
+     */
+    include(filePath: string) {
+        const target = path.join(this.dir, path.basename(filePath));
+        const rs = fs.createReadStream(filePath);
+
+        this.files.push({
+            save(): Promise<void> {
+                return fmtPipe(target, s => rs.pipe(s));
+            }
+        });
     }
 
     /**
@@ -122,27 +157,9 @@ export class File {
      * Saves out the file to the filesystem.
      */
     save(): Promise<void> {
-        const text = this.content.toString();
-        const fmt = child.spawn("gofmt");
-
-        fmt.stderr.pipe(process.stderr);
-        fmt.stdout.pipe(fs.createWriteStream(this.path));
-        fmt.stdin.write(text);
-        fmt.stdin.end();
-
-        return new Promise<void>((resolve, reject) => {
-            fmt.once("exit", (status: number) => {
-                if (status === 0) {
-                    resolve();
-                } else {
-                    reject(new GofmtError(`Error formatting file, exit code ${status}`));
-                }
-            });
-
-            fmt.once("error", (err: any) => {
-                err.content = text;
-                reject(err);
-            });
+        return fmtPipe(this.path, s => {
+            s.write(this.content.toString());
+            s.end();
         });
     }
 }
@@ -152,8 +169,8 @@ export class File {
  */
 export class Struct implements Stringable {
 
-    private fields : { [field: string]: string }= {};
-    private parents : { [name: string]: void }= {};
+    private fields : { [field: string]: string } = {};
+    private parents : { [name: string]: void } = {};
 
     constructor(private name: string) {}
 
@@ -167,6 +184,13 @@ export class Struct implements Stringable {
         }
 
         return this;
+    }
+
+    /**
+     * Returns a list of fields on the struct.
+     */
+    getFields(): { [field: string]: string } {
+        return this.fields
     }
 
     /**
